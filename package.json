@@ -1,0 +1,11 @@
+{
+  "name": "warthunder-localhost-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local companion dashboard for War Thunder telemetry exposed on localhost:8111",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node server.mjs"
+  }
+}
