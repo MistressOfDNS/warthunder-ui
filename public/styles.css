@@ -315,6 +315,22 @@ code {
   color: #a7c3ff;
 }
 
+.legend-fighter {
+  color: #8fb6ff;
+}
+
+.legend-assault-aircraft {
+  color: #ff9a70;
+}
+
+.legend-bomber {
+  color: #ffb86b;
+}
+
+.legend-helicopter {
+  color: #9fe28f;
+}
+
 .legend-ship {
   color: #76d0ff;
 }

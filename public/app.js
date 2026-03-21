@@ -257,6 +257,36 @@ function drawAircraft(context, x, y, size) {
   context.closePath();
 }
 
+function drawBomber(context, x, y, size) {
+  context.beginPath();
+  context.moveTo(x, y - size);
+  context.lineTo(x + size * 0.42, y - size * 0.18);
+  context.lineTo(x + size * 1.15, y - size * 0.02);
+  context.lineTo(x + size * 0.45, y + size * 0.2);
+  context.lineTo(x + size * 0.3, y + size);
+  context.lineTo(x, y + size * 0.55);
+  context.lineTo(x - size * 0.3, y + size);
+  context.lineTo(x - size * 0.45, y + size * 0.2);
+  context.lineTo(x - size * 1.15, y - size * 0.02);
+  context.lineTo(x - size * 0.42, y - size * 0.18);
+  context.closePath();
+}
+
+function drawHelicopter(context, x, y, size) {
+  context.beginPath();
+  context.roundRect(x - size * 0.45, y - size * 0.55, size * 0.9, size * 1.05, 3);
+  context.moveTo(x + size * 0.45, y - size * 0.15);
+  context.lineTo(x + size * 1.45, y - size * 0.15);
+  context.moveTo(x - size * 1.4, y - size * 0.85);
+  context.lineTo(x + size * 1.4, y - size * 0.85);
+  context.moveTo(x, y - size * 1.25);
+  context.lineTo(x, y - size * 0.55);
+  context.moveTo(x - size * 0.55, y + size * 0.75);
+  context.lineTo(x - size * 0.2, y + size * 1.15);
+  context.moveTo(x + size * 0.55, y + size * 0.75);
+  context.lineTo(x + size * 0.2, y + size * 1.15);
+}
+
 function drawShield(context, x, y, size) {
   context.beginPath();
   context.moveTo(x, y - size);
@@ -334,7 +364,19 @@ function getMarkerKind(entry) {
   if (type === "point_of_interest" || icon === "point_of_interest") {
     return "point-of-interest";
   }
-  if (icon.includes("fighter") || type === "aircraft") {
+  if (icon.includes("helicopter") || icon.includes("heli")) {
+    return "helicopter";
+  }
+  if (icon.includes("bomber")) {
+    return "bomber";
+  }
+  if (icon.includes("assault") || icon.includes("attacker")) {
+    return "assault-aircraft";
+  }
+  if (icon.includes("fighter")) {
+    return "fighter";
+  }
+  if (type === "aircraft") {
     return "aircraft";
   }
   if (icon.includes("ship") || type === "ship") {
@@ -360,6 +402,10 @@ function formatMarkerKind(markerKind) {
     "bombing-point": "Bombing Point",
     "defending-point": "Defending Point",
     "point-of-interest": "Point Of Interest",
+    fighter: "Fighter",
+    "assault-aircraft": "Assault Aircraft",
+    bomber: "Bomber",
+    helicopter: "Helicopter",
     aircraft: "Aircraft",
     ship: "Ship",
     tank: "Tank",
@@ -404,6 +450,14 @@ function renderLegendSymbol(markerKind) {
       '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 4v5c0 5-3.3 7.9-7 9-3.7-1.1-7-4-7-9V7z"></path></svg>',
     "point-of-interest":
       '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z"></path></svg>',
+    fighter:
+      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2 6 7 2-6 2v8l-3-2-3 2v-8l-6-2 7-2z"></path></svg>',
+    "assault-aircraft":
+      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l3 6 6 2-5 2 1 8-5-3-5 3 1-8-5-2 6-2z"></path></svg>',
+    bomber:
+      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l3 4 7 1-6 2-1 8-3-2-3 2-1-8-6-2 7-1z"></path></svg>',
+    helicopter:
+      '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="8" width="6" height="8" rx="2"></rect><path d="M6 7h12"></path><path d="M12 4v4"></path><path d="M15 11h5"></path><path d="M10 17l-2 3"></path><path d="M14 17l2 3"></path></svg>',
     aircraft:
       '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2 6 7 2-6 2v8l-3-2-3 2v-8l-6-2 7-2z"></path></svg>',
     ship:
@@ -424,7 +478,11 @@ function renderLegendSymbol(markerKind) {
 function renderMapLegend() {
   const legendItems = [
     { kind: "player", label: "Self" },
-    { kind: "aircraft", label: "Aircraft" },
+    { kind: "fighter", label: "Fighter" },
+    { kind: "assault-aircraft", label: "Assault Aircraft" },
+    { kind: "bomber", label: "Bomber" },
+    { kind: "helicopter", label: "Helicopter" },
+    { kind: "aircraft", label: "Generic Aircraft" },
     { kind: "ship", label: "Ship" },
     { kind: "tank", label: "Tank" },
     { kind: "spaa", label: "Air Defence" },
@@ -564,6 +622,38 @@ function drawMapMarker(context, entry, x, y) {
 
   if (markerKind === "point-of-interest") {
     drawStar(context, x, y, 7);
+    context.fill();
+    context.stroke();
+    context.restore();
+    return;
+  }
+
+  if (markerKind === "fighter") {
+    drawAircraft(context, x, y, 6);
+    context.fill();
+    context.stroke();
+    context.restore();
+    return;
+  }
+
+  if (markerKind === "assault-aircraft") {
+    drawBomber(context, x, y, 6);
+    context.fill();
+    context.stroke();
+    context.restore();
+    return;
+  }
+
+  if (markerKind === "bomber") {
+    drawBomber(context, x, y, 6.5);
+    context.fill();
+    context.stroke();
+    context.restore();
+    return;
+  }
+
+  if (markerKind === "helicopter") {
+    drawHelicopter(context, x, y, 5.5);
     context.fill();
     context.stroke();
     context.restore();
