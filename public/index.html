@@ -57,13 +57,20 @@
               <p class="panel-kicker">Tactical View</p>
               <h2>Battle Map</h2>
             </div>
-            <div class="map-meta" id="map-meta"></div>
+            <div class="map-panel-tools">
+              <div class="map-meta" id="map-meta"></div>
+              <button id="toggle-map-legend" class="clear-button toggle-button" type="button" aria-pressed="false">
+                Show Legend
+              </button>
+            </div>
           </div>
           <div class="map-stage">
             <img id="map-image" alt="War Thunder map" />
             <canvas id="map-overlay"></canvas>
             <div class="map-empty" id="map-empty">Waiting for map data</div>
+            <div id="map-tooltip" class="map-tooltip" hidden></div>
           </div>
+          <div id="map-legend" class="map-legend" hidden></div>
         </section>
 
         <section class="panel side-log-panel">

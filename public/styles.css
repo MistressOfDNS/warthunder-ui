@@ -200,9 +200,19 @@ code {
   overflow: hidden;
   border-radius: 22px;
   border: 1px solid var(--line);
+  user-select: none;
+  touch-action: none;
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0)),
     linear-gradient(180deg, rgba(15, 27, 43, 0.85), rgba(9, 17, 26, 0.95));
+}
+
+.map-stage[data-can-pan="true"] {
+  cursor: grab;
+}
+
+.map-stage[data-dragging="true"] {
+  cursor: grabbing;
 }
 
 .map-stage img,
@@ -216,6 +226,8 @@ code {
 .map-stage canvas {
   width: 100%;
   height: 100%;
+  transform-origin: top left;
+  will-change: transform;
 }
 
 .map-stage img {
@@ -241,11 +253,110 @@ code {
   flex-wrap: wrap;
 }
 
+.map-panel-tools {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+
 .map-meta span {
   padding: 0.4rem 0.7rem;
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--muted);
+}
+
+.map-legend {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background: var(--panel-strong);
+}
+
+.map-legend-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.legend-item {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+}
+
+.legend-symbol {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.legend-symbol svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.legend-player {
+  color: #f6cf2f;
+}
+
+.legend-aircraft {
+  color: #a7c3ff;
+}
+
+.legend-ship {
+  color: #76d0ff;
+}
+
+.legend-tank {
+  color: #ff9a70;
+}
+
+.legend-spaa {
+  color: #f3dd76;
+}
+
+.legend-capture-zone {
+  color: #7be0b8;
+}
+
+.legend-bombing-point {
+  color: #ff8a6b;
+}
+
+.legend-defending-point {
+  color: #71d8ff;
+}
+
+.legend-point-of-interest {
+  color: #d5c1ff;
+}
+
+.map-tooltip {
+  position: absolute;
+  z-index: 3;
+  max-width: 220px;
+  padding: 0.5rem 0.7rem;
+  color: var(--text);
+  font-size: 0.82rem;
+  white-space: nowrap;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(8, 15, 24, 0.92);
+  backdrop-filter: blur(8px);
+  transform: translate(0, 0);
 }
 
 .spark-grid,
@@ -392,6 +503,16 @@ code {
 .mission-content {
   display: grid;
   gap: 16px;
+}
+
+.mission-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.toggle-button[aria-pressed="true"] {
+  background: rgba(123, 224, 184, 0.14);
+  border-color: rgba(123, 224, 184, 0.3);
 }
 
 .mission-status-row {
