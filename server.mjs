@@ -226,8 +226,78 @@ function parseLines(text) {
     .filter(Boolean);
 }
 
+function formatGameChatEntry(entry) {
+  if (!entry || typeof entry !== "object") {
+    return String(entry ?? "");
+  }
+
+  const time = formatBattleTime(entry.time);
+  const mode = entry.mode ? `[${entry.mode}] ` : "";
+  const sender = entry.sender ? `${entry.sender}: ` : "";
+  const message = entry.msg ?? entry.message ?? "";
+  return [time, `${mode}${sender}${message}`.trim()].filter(Boolean).join(" ");
+}
+
+function formatHudEntry(entry) {
+  if (!entry || typeof entry !== "object") {
+    return String(entry ?? "");
+  }
+
+  const rawMessage = String(entry.msg ?? entry.message ?? entry.text ?? entry.name ?? "");
+  if (/td!\s*kd\?NET_PLAYER_DISCONNECT_FROM_GAME/i.test(rawMessage)) {
+    return "";
+  }
+
+  const time = formatBattleTime(entry.time);
+  const sender = entry.sender ? `${entry.sender} ` : "";
+  const message = rawMessage;
+  return [time, `${sender}${message || JSON.stringify(entry)}`.trim()].filter(Boolean).join(" ");
+}
+
+function formatBattleTime(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return "";
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60).toString().padStart(2, "0");
+  return `${minutes}:${remainingSeconds}`;
+}
+
+function parseStructuredFeed(text, formatter) {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) {
+      return parsed.map(formatter).filter(Boolean);
+    }
+    if (parsed && typeof parsed === "object") {
+      const entries = parsed.damage ?? parsed.events ?? parsed.messages ?? parsed.items ?? parsed;
+      if (Array.isArray(entries)) {
+        return entries.map(formatter).filter(Boolean);
+      }
+      return [formatter(parsed)].filter(Boolean);
+    }
+  } catch {
+    // Fall through to line parsing for older/plain-text endpoint output.
+  }
+
+  return parseLines(text);
+}
+
 async function fetchUpstream(endpoint) {
-  const response = await fetch(`${WT_BASE_URL}/${endpoint}`, {
+  const upstreamPath =
+    endpoint === "gamechat"
+      ? "gamechat?lastId=0"
+      : endpoint === "hudmsg"
+        ? "hudmsg?lastEvt=0&lastDmg=0"
+        : endpoint;
+  const response = await fetch(`${WT_BASE_URL}/${upstreamPath}`, {
     headers: {
       Accept: endpoint === "gamechat" || endpoint === "hudmsg" ? "text/plain" : "application/json"
     }
@@ -242,7 +312,10 @@ async function fetchUpstream(endpoint) {
   }
 
   if (endpoint === "gamechat" || endpoint === "hudmsg") {
-    return parseLines(await response.text());
+    const text = await response.text();
+    return endpoint === "gamechat"
+      ? parseStructuredFeed(text, formatGameChatEntry)
+      : parseStructuredFeed(text, formatHudEntry);
   }
 
   return response.json();

@@ -8,16 +8,12 @@
   </head>
   <body>
     <div class="app-shell">
-      <header class="hero">
-        <div>
+      <header class="topbar">
+        <div class="brand-lockup">
           <p class="eyebrow">War Thunder Telemetry</p>
           <h1>Flight Desk</h1>
-          <p class="hero-copy">
-            Local companion dashboard for the live feed exposed by
-            <code>localhost:8111</code>.
-          </p>
         </div>
-        <div class="hero-meta">
+        <div class="topbar-status">
           <div class="status-card">
             <span class="status-dot" id="connection-dot"></span>
             <div>
@@ -25,11 +21,13 @@
               <strong id="connection-label">Connecting...</strong>
             </div>
           </div>
-          <div class="hero-stats">
+          <div class="topbar-stat">
             <div>
-              <span>Airframe</span>
+              <span>Vehicle</span>
               <strong id="vehicle-label">Waiting for telemetry</strong>
             </div>
+          </div>
+          <div class="topbar-stat">
             <div>
               <span>Updated</span>
               <strong id="updated-label">-</strong>
@@ -59,6 +57,21 @@
             </div>
             <div class="map-panel-tools">
               <div class="map-meta" id="map-meta"></div>
+              <div class="map-tools" aria-label="Map drawing tools">
+                <button id="toggle-measure" class="clear-button toggle-button" type="button" aria-pressed="false">
+                  Measure
+                </button>
+                <label class="map-unit-picker">
+                  <span>Units</span>
+                  <select id="measure-unit">
+                    <option value="km">km</option>
+                    <option value="mi">miles</option>
+                    <option value="nm">nm</option>
+                  </select>
+                </label>
+                <button id="clear-measure" class="clear-button" type="button">Clear</button>
+              </div>
+              <div id="measure-output" class="measure-output">No measurement</div>
               <button id="toggle-map-legend" class="clear-button toggle-button" type="button" aria-pressed="false">
                 Show Legend
               </button>
@@ -73,14 +86,14 @@
           <div id="map-legend" class="map-legend" hidden></div>
         </section>
 
-        <section class="panel side-log-panel">
+        <section class="panel comms-panel">
           <div class="panel-heading">
             <div>
               <p class="panel-kicker">Comms</p>
               <h2>Log Console</h2>
             </div>
           </div>
-          <div class="side-log-stack">
+          <div class="comms-grid">
             <section class="log-pane">
               <div class="log-pane-header">
                 <div>
@@ -90,6 +103,16 @@
                 <button id="clear-hud-feed" class="clear-button" type="button">Clear</button>
               </div>
               <ul id="hud-feed" class="feed-list log-list"></ul>
+            </section>
+            <section class="log-pane">
+              <div class="log-pane-header">
+                <div>
+                  <p class="panel-kicker">Team Feed</p>
+                  <h3>Live Chat</h3>
+                </div>
+                <button id="clear-chat-feed" class="clear-button" type="button">Clear</button>
+              </div>
+              <ul id="chat-feed" class="feed-list log-list"></ul>
             </section>
           </div>
         </section>
@@ -122,25 +145,6 @@
             </div>
           </div>
           <div id="control-grid" class="control-grid"></div>
-        </section>
-
-        <section class="panel chat-panel">
-          <div class="panel-heading">
-            <div>
-              <p class="panel-kicker">Comms</p>
-              <h2>Chat</h2>
-            </div>
-          </div>
-          <section class="log-pane">
-            <div class="log-pane-header">
-              <div>
-                <p class="panel-kicker">Team Feed</p>
-                <h3>Live Chat</h3>
-              </div>
-              <button id="clear-chat-feed" class="clear-button" type="button">Clear</button>
-            </div>
-            <ul id="chat-feed" class="feed-list log-list"></ul>
-          </section>
         </section>
 
         <section class="panel panel-wide">

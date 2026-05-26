@@ -8,11 +8,13 @@ const appState = {
   feeds: {
     hudmsg: {
       source: [],
-      visible: []
+      visible: [],
+      clearedThrough: Number(localStorage.getItem("wt-hudmsg-cleared-through") ?? 0)
     },
     gamechat: {
       source: [],
-      visible: []
+      visible: [],
+      clearedThrough: Number(localStorage.getItem("wt-gamechat-cleared-through") ?? 0)
     }
   },
   showPendingObjectives: true,
@@ -27,6 +29,14 @@ const appState = {
     lastPointerY: 0,
     minZoom: 1,
     maxZoom: 5
+  },
+  measure: {
+    enabled: false,
+    isDrawing: false,
+    pointerId: null,
+    unit: "km",
+    start: null,
+    end: null
   },
   mapHitAreas: [],
   mapKey: null
@@ -45,6 +55,10 @@ const mapEmpty = document.querySelector("#map-empty");
 const mapLegend = document.querySelector("#map-legend");
 const mapTooltip = document.querySelector("#map-tooltip");
 const toggleMapLegendButton = document.querySelector("#toggle-map-legend");
+const toggleMeasureButton = document.querySelector("#toggle-measure");
+const measureUnitSelect = document.querySelector("#measure-unit");
+const clearMeasureButton = document.querySelector("#clear-measure");
+const measureOutput = document.querySelector("#measure-output");
 const sparkGrid = document.querySelector("#spark-grid");
 const engineGrid = document.querySelector("#engine-grid");
 const controlGrid = document.querySelector("#control-grid");
@@ -169,6 +183,7 @@ function applyMapTransform() {
   mapOverlay.style.transform = "";
   mapStage.dataset.canPan = String(zoom > 1);
   mapStage.dataset.dragging = String(appState.mapView.isDragging);
+  mapStage.dataset.measuring = String(appState.measure.enabled);
 }
 
 function projectMapPoint(x, y, width, height) {
@@ -176,6 +191,89 @@ function projectMapPoint(x, y, width, height) {
     x: appState.mapView.offsetX + x * width * appState.mapView.zoom,
     y: appState.mapView.offsetY + y * height * appState.mapView.zoom
   };
+}
+
+function screenToMapPoint(screenX, screenY) {
+  const width = mapStage.clientWidth || 1;
+  const height = mapStage.clientHeight || 1;
+
+  return {
+    x: clamp((screenX - appState.mapView.offsetX) / (width * appState.mapView.zoom), 0, 1),
+    y: clamp((screenY - appState.mapView.offsetY) / (height * appState.mapView.zoom), 0, 1)
+  };
+}
+
+function getMapDimensionsMeters(mapInfo) {
+  const min = Array.isArray(mapInfo?.map_min) ? mapInfo.map_min : null;
+  const max = Array.isArray(mapInfo?.map_max) ? mapInfo.map_max : null;
+  if (
+    min?.length >= 2 &&
+    max?.length >= 2 &&
+    Number.isFinite(min[0]) &&
+    Number.isFinite(min[1]) &&
+    Number.isFinite(max[0]) &&
+    Number.isFinite(max[1])
+  ) {
+    return {
+      width: Math.abs(Number(max[0]) - Number(min[0])),
+      height: Math.abs(Number(max[1]) - Number(min[1]))
+    };
+  }
+
+  const gridSize = Array.isArray(mapInfo?.grid_size) ? mapInfo.grid_size : null;
+  if (gridSize?.length >= 2 && Number.isFinite(gridSize[0]) && Number.isFinite(gridSize[1])) {
+    return {
+      width: Math.abs(Number(gridSize[0])),
+      height: Math.abs(Number(gridSize[1]))
+    };
+  }
+
+  return null;
+}
+
+function getMeasurementDistanceMeters(snapshot) {
+  const { start, end } = appState.measure;
+  const dimensions = getMapDimensionsMeters(snapshot?.mapInfo);
+
+  if (!start || !end || !dimensions) {
+    return null;
+  }
+
+  const deltaX = (end.x - start.x) * dimensions.width;
+  const deltaY = (end.y - start.y) * dimensions.height;
+  return Math.hypot(deltaX, deltaY);
+}
+
+function formatDistance(meters, unit = appState.measure.unit) {
+  if (!Number.isFinite(meters)) {
+    return "--";
+  }
+
+  const units = {
+    km: { label: "km", factor: 1000 },
+    mi: { label: "mi", factor: 1609.344 },
+    nm: { label: "nm", factor: 1852 }
+  };
+  const target = units[unit] ?? units.km;
+  const value = meters / target.factor;
+  const decimals = value >= 100 ? 1 : value >= 10 ? 2 : 3;
+  return `${value.toFixed(decimals)} ${target.label}`;
+}
+
+function updateMeasureOutput(snapshot = appState.latest) {
+  toggleMeasureButton.setAttribute("aria-pressed", String(appState.measure.enabled));
+
+  if (!appState.measure.start || !appState.measure.end) {
+    measureOutput.textContent = appState.measure.enabled ? "Click and drag on the map" : "No measurement";
+    return;
+  }
+
+  const distanceMeters = getMeasurementDistanceMeters(snapshot);
+  const secondaryUnits = ["km", "mi", "nm"].filter((unit) => unit !== appState.measure.unit);
+  measureOutput.textContent =
+    distanceMeters === null
+      ? "Map scale unavailable"
+      : `${formatDistance(distanceMeters)} (${secondaryUnits.map((unit) => formatDistance(distanceMeters, unit)).join(" / ")})`;
 }
 
 function drawDiamond(context, x, y, size) {
@@ -713,6 +811,62 @@ function drawMapMarker(context, entry, x, y) {
   context.restore();
 }
 
+function drawMeasurement(context, snapshot, width, height) {
+  const { start, end } = appState.measure;
+  if (!start || !end) {
+    updateMeasureOutput(snapshot);
+    return;
+  }
+
+  const startPoint = projectMapPoint(start.x, start.y, width, height);
+  const endPoint = projectMapPoint(end.x, end.y, width, height);
+  const distanceMeters = getMeasurementDistanceMeters(snapshot);
+  const label = distanceMeters === null ? "Scale unavailable" : formatDistance(distanceMeters);
+  const labelX = (startPoint.x + endPoint.x) / 2;
+  const labelY = (startPoint.y + endPoint.y) / 2;
+
+  context.save();
+  context.strokeStyle = "#f2d36f";
+  context.fillStyle = "#f2d36f";
+  context.lineWidth = 2;
+  context.setLineDash([8, 5]);
+  context.beginPath();
+  context.moveTo(startPoint.x, startPoint.y);
+  context.lineTo(endPoint.x, endPoint.y);
+  context.stroke();
+  context.setLineDash([]);
+
+  for (const point of [startPoint, endPoint]) {
+    context.beginPath();
+    context.arc(point.x, point.y, 5, 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = "rgba(8, 10, 12, 0.9)";
+    context.lineWidth = 2;
+    context.stroke();
+  }
+
+  context.font = "700 12px Inter, Segoe UI, sans-serif";
+  const metrics = context.measureText(label);
+  const paddingX = 8;
+  const boxWidth = metrics.width + paddingX * 2;
+  const boxHeight = 24;
+  const boxX = clamp(labelX - boxWidth / 2, 6, width - boxWidth - 6);
+  const boxY = clamp(labelY - boxHeight - 10, 6, height - boxHeight - 6);
+
+  context.fillStyle = "rgba(9, 13, 18, 0.94)";
+  context.strokeStyle = "rgba(242, 211, 111, 0.7)";
+  context.lineWidth = 1;
+  context.beginPath();
+  context.roundRect(boxX, boxY, boxWidth, boxHeight, 6);
+  context.fill();
+  context.stroke();
+  context.fillStyle = "#f2d36f";
+  context.fillText(label, boxX + paddingX, boxY + 16);
+  context.restore();
+
+  updateMeasureOutput(snapshot);
+}
+
 function arraysMatchPrefix(left, right) {
   if (left.length > right.length) {
     return false;
@@ -1142,27 +1296,136 @@ function renderMission(snapshot) {
 
 function syncFeed(feedName, incomingLines) {
   const entry = appState.feeds[feedName];
-  const incoming = Array.isArray(incomingLines) ? incomingLines : [];
+  const incoming = Array.isArray(incomingLines) ? incomingLines.map(formatFeedLine).filter(Boolean) : [];
+  const visibleIncoming = incoming.slice(entry.clearedThrough);
 
   if (incoming.length < entry.source.length || !arraysMatchPrefix(entry.source, incoming)) {
     entry.source = [...incoming];
-    entry.visible = [...incoming];
+    entry.clearedThrough = Math.min(entry.clearedThrough, incoming.length);
+    entry.visible = incoming.slice(entry.clearedThrough);
     return;
   }
 
   if (incoming.length > entry.source.length) {
-    const appended = incoming.slice(entry.source.length);
+    const appended = incoming.slice(Math.max(entry.source.length, entry.clearedThrough));
     entry.visible.push(...appended);
     entry.source = [...incoming];
+    return;
   }
+
+  entry.visible = visibleIncoming;
 }
 
 function renderFeed(target, lines, emptyText) {
+  const renderKey = JSON.stringify(lines);
+  if (target.dataset.renderKey === renderKey) {
+    return;
+  }
+
+  if (isSelectionInside(target)) {
+    target.dataset.pendingRenderKey = renderKey;
+    return;
+  }
+
   target.innerHTML =
     lines.length > 0
-      ? lines.map((line) => `<li>${line}</li>`).join("")
+      ? lines
+          .map((line) => `<li class="${target === hudFeed ? getHudEventClass(line) : ""}">${renderFeedLineHtml(line)}</li>`)
+          .join("")
       : `<li class="empty-note">${emptyText}</li>`;
+  target.dataset.renderKey = renderKey;
+  delete target.dataset.pendingRenderKey;
   target.scrollTop = target.scrollHeight;
+}
+
+function isSelectionInside(target) {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return false;
+  }
+
+  const range = selection.getRangeAt(0);
+  return target.contains(range.commonAncestorContainer);
+}
+
+function renderFeedLineHtml(line) {
+  const prefixMatch = String(line).match(/^(\d+:\d{2}\s+)?(\[(?:Team|All|Squad|System)\])\s*/i);
+  const timestamp = prefixMatch?.[1] ?? "";
+  const prefix = prefixMatch?.[2] ?? "";
+  const prefixHtml = prefixMatch
+    ? `${escapeHtml(timestamp)}<span class="feed-prefix feed-prefix-${prefix.slice(1, -1).toLowerCase()}">${escapeHtml(
+        prefix
+      )}</span> `
+    : "";
+  const rest = prefixMatch ? String(line).slice(prefixMatch[0].length) : String(line);
+
+  return `${prefixHtml}${renderWarThunderText(rest)}`;
+}
+
+function getHudEventClass(line) {
+  const text = String(line).toLowerCase();
+
+  if (/has achieved/.test(text)) {
+    return "event-achievement";
+  }
+  if (/destroyed|shot down/.test(text)) {
+    return "event-kill";
+  }
+  if (/critically damaged|severely damaged/.test(text)) {
+    return "event-critical";
+  }
+  if (/set afire/.test(text)) {
+    return "event-fire";
+  }
+  if (/has been wrecked/.test(text)) {
+    return "event-wrecked";
+  }
+  if (/disconnected from the game|net_player_disconnect/.test(text)) {
+    return "event-disconnect";
+  }
+
+  return "";
+}
+
+function renderWarThunderText(text) {
+  const source = String(text);
+  let html = "";
+  let cursor = 0;
+  const colorTagPattern = /<color=(#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?)>(.*?)<\/color>/gis;
+
+  for (const match of source.matchAll(colorTagPattern)) {
+    html += escapeHtml(source.slice(cursor, match.index));
+    const color = normalizeWarThunderColor(match[1]);
+    html += `<span class="wt-color" style="color: ${color}">${escapeHtml(match[2])}</span>`;
+    cursor = match.index + match[0].length;
+  }
+
+  html += escapeHtml(source.slice(cursor));
+  return html;
+}
+
+function normalizeWarThunderColor(value) {
+  const hex = String(value);
+  return /^#[0-9a-fA-F]{8}$/.test(hex) ? hex.slice(0, 7) : hex;
+}
+
+function formatFeedLine(line) {
+  if (line === null || line === undefined) {
+    return "";
+  }
+
+  if (typeof line === "string") {
+    return line;
+  }
+
+  if (typeof line === "object") {
+    const mode = line.mode ? `[${line.mode}] ` : "";
+    const sender = line.sender ? `${line.sender}: ` : "";
+    const message = line.msg ?? line.message ?? JSON.stringify(line);
+    return `${mode}${sender}${message}`.trim();
+  }
+
+  return String(line);
 }
 
 function createTableRows(record, filter) {
@@ -1251,6 +1514,8 @@ function drawMap(snapshot) {
     });
   });
 
+  drawMeasurement(context, snapshot, width, height);
+
   mapMeta.innerHTML = `
     <span>${objects.length} objects</span>
     <span>${snapshot?.mapInfo?.valid ? "Map live" : "Map idle"}</span>
@@ -1338,18 +1603,62 @@ inspectorFilter.addEventListener("input", () => {
 });
 
 clearHudFeedButton.addEventListener("click", () => {
+  appState.feeds.hudmsg.clearedThrough = appState.feeds.hudmsg.source.length;
+  localStorage.setItem("wt-hudmsg-cleared-through", String(appState.feeds.hudmsg.clearedThrough));
   appState.feeds.hudmsg.visible = [];
   renderFeed(hudFeed, appState.feeds.hudmsg.visible, "No HUD events yet.");
 });
 
 clearChatFeedButton.addEventListener("click", () => {
+  appState.feeds.gamechat.clearedThrough = appState.feeds.gamechat.source.length;
+  localStorage.setItem("wt-gamechat-cleared-through", String(appState.feeds.gamechat.clearedThrough));
   appState.feeds.gamechat.visible = [];
   renderFeed(chatFeed, appState.feeds.gamechat.visible, "No chat lines yet.");
+});
+
+document.addEventListener("selectionchange", () => {
+  for (const [target, lines, emptyText] of [
+    [hudFeed, appState.feeds.hudmsg.visible, "No HUD events yet."],
+    [chatFeed, appState.feeds.gamechat.visible, "No chat lines yet."]
+  ]) {
+    if (target.dataset.pendingRenderKey && !isSelectionInside(target)) {
+      renderFeed(target, lines, emptyText);
+    }
+  }
 });
 
 toggleMapLegendButton.addEventListener("click", () => {
   appState.showMapLegend = !appState.showMapLegend;
   renderMapLegend();
+});
+
+toggleMeasureButton.addEventListener("click", () => {
+  appState.measure.enabled = !appState.measure.enabled;
+  appState.measure.isDrawing = false;
+  appState.measure.pointerId = null;
+  updateMeasureOutput();
+  applyMapTransform();
+});
+
+measureUnitSelect.addEventListener("change", () => {
+  appState.measure.unit = measureUnitSelect.value;
+  if (appState.latest) {
+    drawMap(appState.latest);
+  } else {
+    updateMeasureOutput();
+  }
+});
+
+clearMeasureButton.addEventListener("click", () => {
+  appState.measure.start = null;
+  appState.measure.end = null;
+  appState.measure.isDrawing = false;
+  appState.measure.pointerId = null;
+  if (appState.latest) {
+    drawMap(appState.latest);
+  } else {
+    updateMeasureOutput();
+  }
 });
 
 mapStage.addEventListener(
@@ -1390,6 +1699,30 @@ mapStage.addEventListener(
 );
 
 mapStage.addEventListener("pointerdown", (event) => {
+  if (appState.measure.enabled) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const rect = mapStage.getBoundingClientRect();
+    const point = screenToMapPoint(event.clientX - rect.left, event.clientY - rect.top);
+
+    event.preventDefault();
+    hideMapTooltip();
+    appState.measure.start = point;
+    appState.measure.end = point;
+    appState.measure.isDrawing = true;
+    appState.measure.pointerId = event.pointerId;
+    mapStage.setPointerCapture(event.pointerId);
+
+    if (appState.latest) {
+      drawMap(appState.latest);
+    } else {
+      updateMeasureOutput();
+    }
+    return;
+  }
+
   if (event.button !== 0 || appState.mapView.zoom <= 1) {
     return;
   }
@@ -1404,6 +1737,19 @@ mapStage.addEventListener("pointerdown", (event) => {
 });
 
 mapStage.addEventListener("pointermove", (event) => {
+  if (appState.measure.isDrawing && appState.measure.pointerId === event.pointerId) {
+    const rect = mapStage.getBoundingClientRect();
+    appState.measure.end = screenToMapPoint(event.clientX - rect.left, event.clientY - rect.top);
+    event.preventDefault();
+
+    if (appState.latest) {
+      drawMap(appState.latest);
+    } else {
+      updateMeasureOutput();
+    }
+    return;
+  }
+
   if (!appState.mapView.isDragging || appState.mapView.pointerId !== event.pointerId) {
     const rect = mapStage.getBoundingClientRect();
     const hitArea = findMapHitArea(event.clientX - rect.left, event.clientY - rect.top);
@@ -1431,7 +1777,30 @@ mapStage.addEventListener("pointermove", (event) => {
   hideMapTooltip();
 });
 
+function stopMeasuring(event) {
+  if (!appState.measure.isDrawing) {
+    return false;
+  }
+
+  if (event && appState.measure.pointerId !== null && event.pointerId !== appState.measure.pointerId) {
+    return true;
+  }
+
+  if (event && mapStage.hasPointerCapture(event.pointerId)) {
+    mapStage.releasePointerCapture(event.pointerId);
+  }
+
+  appState.measure.isDrawing = false;
+  appState.measure.pointerId = null;
+  updateMeasureOutput();
+  return true;
+}
+
 function stopMapDragging(event) {
+  if (stopMeasuring(event)) {
+    return;
+  }
+
   if (!appState.mapView.isDragging) {
     return;
   }

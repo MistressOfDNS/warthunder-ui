@@ -14,3 +14,8 @@ Thumbs.db
 .cache/
 dist/
 coverage/
+
+.claude/
+.claude-flow/
+.mcp.json
+CLAUDE.md
