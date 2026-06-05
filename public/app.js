@@ -18,6 +18,7 @@ const appState = {
     }
   },
   showMapLegend: false,
+  showBullseye: false,
   mapView: {
     zoom: 1,
     offsetX: 0,
@@ -64,6 +65,7 @@ const mapEmpty = document.querySelector("#map-empty");
 const mapLegend = document.querySelector("#map-legend");
 const mapTooltip = document.querySelector("#map-tooltip");
 const toggleMapLegendButton = document.querySelector("#toggle-map-legend");
+const toggleBullseyeButton = document.querySelector("#toggle-bullseye");
 const toggleMeasureButton = document.querySelector("#toggle-measure");
 const toggleRouteButton = document.querySelector("#toggle-route");
 const measureUnitSelect = document.querySelector("#measure-unit");
@@ -86,8 +88,8 @@ const refreshInFlight = new Set();
 const FAST_REFRESH_MS = 250;
 const SLOW_REFRESH_MS = 3000;
 const BULLSEYE_POINT = {
-  x: 0.5,
-  y: 0.5,
+  x: 4.5 / 8,
+  y: 1 / 8,
   label: "Bullseye"
 };
 
@@ -2193,7 +2195,9 @@ function drawMap(snapshot) {
     });
   });
 
-  drawBullseyeMarker(context, width, height);
+  if (appState.showBullseye) {
+    drawBullseyeMarker(context, width, height);
+  }
   const selection = drawSelectedObjective(context, snapshot, width, height);
   const route = drawRoutePoint(context, snapshot, width, height);
   drawMeasurement(context, snapshot, width, height);
@@ -2215,6 +2219,7 @@ function drawMap(snapshot) {
     }
   `;
   mapEmpty.hidden = objects.length > 0;
+  toggleBullseyeButton.setAttribute("aria-pressed", String(appState.showBullseye));
   applyMapTransform();
   renderMapLegend();
 }
@@ -2330,6 +2335,14 @@ document.addEventListener("selectionchange", () => {
 toggleMapLegendButton.addEventListener("click", () => {
   appState.showMapLegend = !appState.showMapLegend;
   renderMapLegend();
+});
+
+toggleBullseyeButton.addEventListener("click", () => {
+  appState.showBullseye = !appState.showBullseye;
+  toggleBullseyeButton.setAttribute("aria-pressed", String(appState.showBullseye));
+  if (appState.latest) {
+    drawMap(appState.latest);
+  }
 });
 
 toggleMeasureButton.addEventListener("click", () => {

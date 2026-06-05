@@ -253,6 +253,13 @@ code {
   gap: 6px;
 }
 
+.map-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .map-unit-picker {
   display: inline-flex;
   align-items: center;
@@ -1006,6 +1013,10 @@ code {
   }
 
   .map-tools {
+    justify-content: flex-start;
+  }
+
+  .map-actions {
     justify-content: flex-start;
   }
 
