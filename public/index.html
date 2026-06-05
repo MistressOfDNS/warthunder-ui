@@ -61,6 +61,9 @@
                 <button id="toggle-measure" class="clear-button toggle-button" type="button" aria-pressed="false">
                   Measure
                 </button>
+                <button id="toggle-route" class="clear-button toggle-button" type="button" aria-pressed="false">
+                  Route
+                </button>
                 <label class="map-unit-picker">
                   <span>Units</span>
                   <select id="measure-unit">
@@ -70,8 +73,10 @@
                   </select>
                 </label>
                 <button id="clear-measure" class="clear-button" type="button">Clear</button>
+                <button id="clear-route" class="clear-button" type="button">Clear Route</button>
               </div>
               <div id="measure-output" class="measure-output">No measurement</div>
+              <div id="route-output" class="measure-output">No route</div>
               <button id="toggle-map-legend" class="clear-button toggle-button" type="button" aria-pressed="false">
                 Show Legend
               </button>
@@ -80,6 +85,7 @@
           <div class="map-stage">
             <img id="map-image" alt="War Thunder map" />
             <canvas id="map-overlay"></canvas>
+            <div id="map-grid-labels" class="map-grid-labels" aria-hidden="true"></div>
             <div class="map-empty" id="map-empty">Waiting for map data</div>
             <div id="map-tooltip" class="map-tooltip" hidden></div>
           </div>

@@ -17,5 +17,7 @@ coverage/
 
 .claude/
 .claude-flow/
+.agents/
+.codex/
 .mcp.json
 CLAUDE.md

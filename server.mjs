@@ -13,8 +13,8 @@ const WT_BASE_URL = process.env.WT_BASE_URL ?? "http://localhost:8111";
 const PUBLIC_DIR = path.join(__dirname, "public");
 
 const ENDPOINTS = {
-  fast: ["state", "indicators"],
-  slow: ["mission.json", "map_info.json", "map_obj.json", "gamechat", "hudmsg"],
+  fast: ["state", "indicators", "map_obj.json"],
+  slow: ["mission.json", "map_info.json", "gamechat", "hudmsg"],
   full: ["state", "indicators", "mission.json", "map_info.json", "map_obj.json", "gamechat", "hudmsg"]
 };
 

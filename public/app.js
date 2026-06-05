@@ -17,7 +17,6 @@ const appState = {
       clearedThrough: Number(localStorage.getItem("wt-gamechat-cleared-through") ?? 0)
     }
   },
-  showPendingObjectives: true,
   showMapLegend: false,
   mapView: {
     zoom: 1,
@@ -36,8 +35,17 @@ const appState = {
     pointerId: null,
     unit: "km",
     start: null,
-    end: null
+    end: null,
+    startLabel: null,
+    endLabel: null
   },
+  route: {
+    enabled: false,
+    point: null,
+    label: null,
+    snapped: false
+  },
+  selectedObjectiveId: null,
   mapHitAreas: [],
   mapKey: null
 };
@@ -51,14 +59,18 @@ const mapMeta = document.querySelector("#map-meta");
 const mapStage = document.querySelector(".map-stage");
 const mapImage = document.querySelector("#map-image");
 const mapOverlay = document.querySelector("#map-overlay");
+const mapGridLabels = document.querySelector("#map-grid-labels");
 const mapEmpty = document.querySelector("#map-empty");
 const mapLegend = document.querySelector("#map-legend");
 const mapTooltip = document.querySelector("#map-tooltip");
 const toggleMapLegendButton = document.querySelector("#toggle-map-legend");
 const toggleMeasureButton = document.querySelector("#toggle-measure");
+const toggleRouteButton = document.querySelector("#toggle-route");
 const measureUnitSelect = document.querySelector("#measure-unit");
 const clearMeasureButton = document.querySelector("#clear-measure");
+const clearRouteButton = document.querySelector("#clear-route");
 const measureOutput = document.querySelector("#measure-output");
+const routeOutput = document.querySelector("#route-output");
 const sparkGrid = document.querySelector("#spark-grid");
 const engineGrid = document.querySelector("#engine-grid");
 const controlGrid = document.querySelector("#control-grid");
@@ -70,6 +82,14 @@ const clearChatFeedButton = document.querySelector("#clear-chat-feed");
 const stateTable = document.querySelector("#state-table");
 const indicatorsTable = document.querySelector("#indicators-table");
 const inspectorFilter = document.querySelector("#inspector-filter");
+const refreshInFlight = new Set();
+const FAST_REFRESH_MS = 250;
+const SLOW_REFRESH_MS = 3000;
+const BULLSEYE_POINT = {
+  x: 0.5,
+  y: 0.5,
+  label: "Bullseye"
+};
 
 const metricDefinitions = [
   { key: "altitudeM", label: "Altitude", suffix: "m", decimals: 0 },
@@ -184,6 +204,7 @@ function applyMapTransform() {
   mapStage.dataset.canPan = String(zoom > 1);
   mapStage.dataset.dragging = String(appState.mapView.isDragging);
   mapStage.dataset.measuring = String(appState.measure.enabled);
+  mapStage.dataset.routing = String(appState.route.enabled);
 }
 
 function projectMapPoint(x, y, width, height) {
@@ -231,6 +252,180 @@ function getMapDimensionsMeters(mapInfo) {
   return null;
 }
 
+function getMapGridSize(mapInfo) {
+  const gridSize = Array.isArray(mapInfo?.grid_size) ? mapInfo.grid_size : null;
+  const gridSteps = Array.isArray(mapInfo?.grid_steps) ? mapInfo.grid_steps : null;
+  const columns =
+    gridSize?.length >= 2 && gridSteps?.length >= 2 && Number(gridSteps[0]) > 0
+      ? Math.round(Math.abs(Number(gridSize[0]) / Number(gridSteps[0])))
+      : 8;
+  const rows =
+    gridSize?.length >= 2 && gridSteps?.length >= 2 && Number(gridSteps[1]) > 0
+      ? Math.round(Math.abs(Number(gridSize[1]) / Number(gridSteps[1])))
+      : 8;
+
+  return {
+    columns: clamp(columns, 1, 26),
+    rows: clamp(rows, 1, 26)
+  };
+}
+
+function formatGridColumn(index) {
+  let value = index + 1;
+  let label = "";
+  while (value > 0) {
+    value -= 1;
+    label = String.fromCharCode(65 + (value % 26)) + label;
+    value = Math.floor(value / 26);
+  }
+  return label;
+}
+
+function parseGridColumnLabel(label) {
+  let value = 0;
+  for (const char of String(label).toUpperCase()) {
+    const code = char.charCodeAt(0);
+    if (code < 65 || code > 90) {
+      return null;
+    }
+    value = value * 26 + (code - 64);
+  }
+  return value - 1;
+}
+
+function getMapGridCell(point, mapInfo) {
+  if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) {
+    return null;
+  }
+
+  const { columns, rows } = getMapGridSize(mapInfo);
+  return {
+    column: clamp(Math.floor(point.x * columns), 0, columns - 1),
+    row: clamp(Math.floor(point.y * rows), 0, rows - 1),
+    columns,
+    rows
+  };
+}
+
+function formatMapGridCell(point, mapInfo) {
+  const cell = getMapGridCell(point, mapInfo);
+  return cell ? `${formatGridColumn(cell.row)}${cell.column + 1}` : "Map Point";
+}
+
+function parseObjectiveGridReference(text, mapInfo) {
+  const match = String(text).match(/\b([A-Z]{1,2})\s*[-:]?\s*(\d{1,2})\b/i);
+  if (!match) {
+    return null;
+  }
+
+  const { columns, rows } = getMapGridSize(mapInfo);
+  const row = parseGridColumnLabel(match[1]);
+  const column = Number(match[2]) - 1;
+
+  if (row === null || !Number.isInteger(column) || column < 0 || column >= columns || row < 0 || row >= rows) {
+    return null;
+  }
+
+  return {
+    column,
+    row,
+    columns,
+    rows,
+    label: `${formatGridColumn(row)}${column + 1}`
+  };
+}
+
+function alignCanvasLine(value, lineWidth = 1) {
+  return Math.round(value) + (lineWidth % 2 === 1 ? 0.5 : 0);
+}
+
+function gridLabelHtml(label, x, y) {
+  return `<span class="map-grid-label" style="left:${Math.round(x)}px; top:${Math.round(y)}px">${escapeHtml(label)}</span>`;
+}
+
+function mapCalloutHtml(label, x, y, width, height, variant = "route") {
+  const maxWidth = Math.min(320, width - 12);
+  const calloutWidth = Math.min(maxWidth, Math.max(160, label.length * 7 + 18));
+  const calloutHeight = 28;
+  const calloutX = Math.round(clamp(x, 6, width - calloutWidth - 6));
+  const calloutY = Math.round(clamp(y, 6, height - calloutHeight - 6));
+
+  return `
+    <span
+      class="map-callout map-callout-${variant}"
+      style="left:${calloutX}px; top:${calloutY}px; max-width:${maxWidth}px"
+    >${escapeHtml(label)}</span>
+  `;
+}
+
+function drawWarThunderGrid(context, snapshot, width, height) {
+  const { columns, rows } = getMapGridSize(snapshot?.mapInfo);
+  const mapLeft = appState.mapView.offsetX;
+  const mapTop = appState.mapView.offsetY;
+  const mapRight = mapLeft + width * appState.mapView.zoom;
+  const mapBottom = mapTop + height * appState.mapView.zoom;
+  const visibleLeft = Math.max(0, mapLeft);
+  const visibleRight = Math.min(width, mapRight);
+  const visibleTop = Math.max(0, mapTop);
+  const visibleBottom = Math.min(height, mapBottom);
+
+  if (visibleLeft >= visibleRight || visibleTop >= visibleBottom) {
+    mapGridLabels.innerHTML = "";
+    return;
+  }
+
+  context.save();
+  const labels = [];
+
+  for (let index = 0; index <= columns; index += 1) {
+    const point = projectMapPoint(index / columns, 0, width, height);
+    const isEdge = index === 0 || index === columns;
+    const lineWidth = isEdge ? 2 : 1;
+    const lineX = alignCanvasLine(point.x, lineWidth);
+    context.strokeStyle = isEdge ? "rgba(255,255,255,0.28)" : "rgba(255,255,255,0.14)";
+    context.lineWidth = lineWidth;
+    context.beginPath();
+    context.moveTo(lineX, Math.round(mapTop));
+    context.lineTo(lineX, Math.round(mapBottom));
+    context.stroke();
+  }
+
+  for (let index = 0; index <= rows; index += 1) {
+    const point = projectMapPoint(0, index / rows, width, height);
+    const isEdge = index === 0 || index === rows;
+    const lineWidth = isEdge ? 2 : 1;
+    const lineY = alignCanvasLine(point.y, lineWidth);
+    context.strokeStyle = isEdge ? "rgba(255,255,255,0.28)" : "rgba(255,255,255,0.14)";
+    context.lineWidth = lineWidth;
+    context.beginPath();
+    context.moveTo(Math.round(mapLeft), lineY);
+    context.lineTo(Math.round(mapRight), lineY);
+    context.stroke();
+  }
+
+  const labelTop = Math.round(clamp(mapTop + 18, visibleTop + 14, visibleBottom - 12));
+  const labelLeft = Math.round(clamp(mapLeft + 18, visibleLeft + 14, visibleRight - 12));
+
+  for (let index = 0; index < columns; index += 1) {
+    const center = projectMapPoint((index + 0.5) / columns, 0, width, height);
+    if (center.x < visibleLeft + 8 || center.x > visibleRight - 8) {
+      continue;
+    }
+    labels.push(gridLabelHtml(String(index + 1), center.x, labelTop));
+  }
+
+  for (let index = 0; index < rows; index += 1) {
+    const center = projectMapPoint(0, (index + 0.5) / rows, width, height);
+    if (center.y < visibleTop + 8 || center.y > visibleBottom - 8) {
+      continue;
+    }
+    labels.push(gridLabelHtml(formatGridColumn(index), labelLeft, center.y));
+  }
+
+  mapGridLabels.innerHTML = labels.join("");
+  context.restore();
+}
+
 function getMeasurementDistanceMeters(snapshot) {
   const { start, end } = appState.measure;
   const dimensions = getMapDimensionsMeters(snapshot?.mapInfo);
@@ -260,20 +455,141 @@ function formatDistance(meters, unit = appState.measure.unit) {
   return `${value.toFixed(decimals)} ${target.label}`;
 }
 
+function formatBearing(degrees) {
+  if (!Number.isFinite(degrees)) {
+    return "--";
+  }
+  return `${Math.round((degrees + 360) % 360)} deg`;
+}
+
+function getCurrentSpeedMetersPerSecond(snapshot) {
+  const flight = snapshot?.derived?.flight ?? {};
+  const speedKmh = Number.isFinite(flight.tasKmh) ? flight.tasKmh : flight.iasKmh;
+  if (!Number.isFinite(speedKmh) || speedKmh <= 1) {
+    return null;
+  }
+  return speedKmh / 3.6;
+}
+
+function getTargetEtaSeconds(distanceMeters, snapshot) {
+  const speedMetersPerSecond = getCurrentSpeedMetersPerSecond(snapshot);
+  if (!Number.isFinite(distanceMeters) || !speedMetersPerSecond) {
+    return null;
+  }
+  return distanceMeters / speedMetersPerSecond;
+}
+
+function formatDuration(seconds) {
+  if (!Number.isFinite(seconds)) {
+    return "--";
+  }
+
+  const roundedSeconds = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(roundedSeconds / 3600);
+  const minutes = Math.floor((roundedSeconds % 3600) / 60);
+  const remainingSeconds = roundedSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  }
+  return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
+}
+
+function formatTargetNavigation(distanceMeters, bearingDegrees, snapshot) {
+  const rangeBearing =
+    distanceMeters === null ? "Range unavailable" : `${formatDistance(distanceMeters)} / ${formatBearing(bearingDegrees)}`;
+  const etaSeconds = getTargetEtaSeconds(distanceMeters, snapshot);
+  return etaSeconds === null ? rangeBearing : `${rangeBearing} / ETA ${formatDuration(etaSeconds)}`;
+}
+
+function getNavigationToPoint(point, snapshot) {
+  const player = getPlayerMapPoint(snapshot);
+  if (!player || !point) {
+    return {
+      distanceMeters: null,
+      bearingDegrees: null,
+      label: "Range unavailable"
+    };
+  }
+
+  const distanceMeters = getMapDistanceMeters(player, point, snapshot?.mapInfo);
+  const bearingDegrees = getMapBearingDegrees(player, point, snapshot?.mapInfo);
+  return {
+    distanceMeters,
+    bearingDegrees,
+    label: formatTargetNavigation(distanceMeters, bearingDegrees, snapshot)
+  };
+}
+
+function getMapDistanceMeters(from, to, mapInfo) {
+  const dimensions = getMapDimensionsMeters(mapInfo);
+  if (!from || !to || !dimensions) {
+    return null;
+  }
+
+  const deltaX = (to.x - from.x) * dimensions.width;
+  const deltaY = (to.y - from.y) * dimensions.height;
+  return Math.hypot(deltaX, deltaY);
+}
+
+function getMapBearingDegrees(from, to, mapInfo) {
+  const dimensions = getMapDimensionsMeters(mapInfo);
+  if (!from || !to || !dimensions) {
+    return null;
+  }
+
+  const eastMeters = (to.x - from.x) * dimensions.width;
+  const northMeters = (from.y - to.y) * dimensions.height;
+  return (Math.atan2(eastMeters, northMeters) * 180) / Math.PI;
+}
+
+function getPlayerMapPoint(snapshot) {
+  const derivedPlayer = snapshot?.derived?.map?.player;
+  if (Number.isFinite(derivedPlayer?.x) && Number.isFinite(derivedPlayer?.y)) {
+    return {
+      x: derivedPlayer.x,
+      y: derivedPlayer.y
+    };
+  }
+
+  const objects = Array.isArray(snapshot?.mapObjects) ? snapshot.mapObjects : [];
+  const player = objects.find((entry) => getMarkerKind(entry) === "player");
+  if (Number.isFinite(player?.x) && Number.isFinite(player?.y)) {
+    return {
+      x: player.x,
+      y: player.y
+    };
+  }
+
+  return null;
+}
+
 function updateMeasureOutput(snapshot = appState.latest) {
   toggleMeasureButton.setAttribute("aria-pressed", String(appState.measure.enabled));
 
   if (!appState.measure.start || !appState.measure.end) {
-    measureOutput.textContent = appState.measure.enabled ? "Click and drag on the map" : "No measurement";
+    measureOutput.innerHTML = `<span class="measure-output-main">${
+      appState.measure.enabled ? "Click and drag on the map" : "No measurement"
+    }</span><span class="measure-output-detail">&nbsp;</span>`;
     return;
   }
 
   const distanceMeters = getMeasurementDistanceMeters(snapshot);
   const secondaryUnits = ["km", "mi", "nm"].filter((unit) => unit !== appState.measure.unit);
-  measureOutput.textContent =
+  const snapLabel = escapeHtml(
+    appState.measure.startLabel && appState.measure.endLabel
+      ? `${appState.measure.startLabel} to ${appState.measure.endLabel}`
+      : ""
+  );
+  const mainText =
     distanceMeters === null
       ? "Map scale unavailable"
       : `${formatDistance(distanceMeters)} (${secondaryUnits.map((unit) => formatDistance(distanceMeters, unit)).join(" / ")})`;
+
+  measureOutput.innerHTML = `
+    <span class="measure-output-main">${escapeHtml(mainText)}</span>
+    <span class="measure-output-detail">${snapLabel || "&nbsp;"}</span>
+  `;
 }
 
 function drawDiamond(context, x, y, size) {
@@ -309,6 +625,38 @@ function drawCrosshair(context, x, y, size) {
   context.lineTo(x + size + 3, y);
   context.moveTo(x, y - size - 3);
   context.lineTo(x, y + size + 3);
+}
+
+function drawBullseye(context, x, y) {
+  context.save();
+  context.strokeStyle = "#ffffff";
+  context.fillStyle = "rgba(255, 255, 255, 0.1)";
+  context.lineWidth = 2;
+
+  context.beginPath();
+  context.arc(x, y, 15, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+  context.beginPath();
+  context.arc(x, y, 8, 0, Math.PI * 2);
+  context.stroke();
+  context.beginPath();
+  context.arc(x, y, 2.5, 0, Math.PI * 2);
+  context.fillStyle = "#ffffff";
+  context.fill();
+
+  context.lineWidth = 1.5;
+  context.beginPath();
+  context.moveTo(x - 22, y);
+  context.lineTo(x - 16, y);
+  context.moveTo(x + 16, y);
+  context.lineTo(x + 22, y);
+  context.moveTo(x, y - 22);
+  context.lineTo(x, y - 16);
+  context.moveTo(x, y + 16);
+  context.lineTo(x, y + 22);
+  context.stroke();
+  context.restore();
 }
 
 function drawTank(context, x, y, size) {
@@ -536,6 +884,253 @@ function describeMapEntry(entry) {
   return [sideLabel, iconLabel ?? formatMarkerKind(markerKind)].filter(Boolean).join(" ");
 }
 
+function getObjectiveMatchScore(objective, entry, snapshot) {
+  if (!Number.isFinite(entry?.x) || !Number.isFinite(entry?.y) || getMarkerKind(entry) === "player") {
+    return -Infinity;
+  }
+
+  const markerKind = getMarkerKind(entry);
+  const side = classifyMapSide(entry);
+  const text = objective.text.toLowerCase();
+  const gridReference = parseObjectiveGridReference(objective.text, snapshot?.mapInfo);
+  const entryCell = getMapGridCell(entry, snapshot?.mapInfo);
+  const haystack = [entry?.icon, entry?.type, entry?.name, entry?.label, entry?.title, describeMapEntry(entry)]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  let score = 0;
+  const isConvoyObjective = /\b(convoy|column)\b/.test(text);
+  const isBombingObjective = /\b(base|bomb(?:ing|er|ers)?|airfield|runway|strike)\b/.test(text);
+  const groundUnitKinds = ["ground", "tank", "spaa"];
+  const objectivePointKinds = ["bombing-point", "capture-zone", "defending-point"];
+  const groundKinds = [...groundUnitKinds, ...objectivePointKinds];
+  const airKinds = ["fighter", "assault-aircraft", "bomber", "helicopter", "aircraft"];
+
+  if (gridReference && entryCell) {
+    const columnDelta = Math.abs(entryCell.column - gridReference.column);
+    const rowDelta = Math.abs(entryCell.row - gridReference.row);
+    const gridDistance = Math.hypot(columnDelta, rowDelta);
+
+    if (columnDelta === 0 && rowDelta === 0) {
+      score += 100;
+    } else {
+      score += Math.max(0, 42 - gridDistance * 16);
+    }
+  }
+
+  if (side === "enemy" && objective.role === "attack") {
+    score += 12;
+  }
+  if (side === "friendly" && objective.role === "defend") {
+    score += 12;
+  }
+
+  if (objective.targetType === "ground" && groundKinds.includes(markerKind)) {
+    score += 8;
+  }
+  if (objective.targetType === "naval" && markerKind === "ship") {
+    score += 8;
+  }
+  if (objective.targetType === "air" && airKinds.includes(markerKind)) {
+    score += 8;
+  }
+  if (objective.targetType === "mixed" && (groundKinds.includes(markerKind) || airKinds.includes(markerKind) || markerKind === "ship")) {
+    score += 5;
+  }
+
+  if (isConvoyObjective && groundUnitKinds.includes(markerKind)) {
+    score += 35;
+  }
+  if (isConvoyObjective && markerKind === "bombing-point") {
+    score -= 80;
+  }
+  if (isConvoyObjective && side === "enemy" && objective.role === "attack") {
+    score += 12;
+  }
+  if (isConvoyObjective && side === "friendly" && objective.role === "defend") {
+    score += 12;
+  }
+
+  if (isBombingObjective && markerKind === "bombing-point") {
+    score += 18;
+  }
+  if (/(capture|zone|point)/.test(text) && markerKind === "capture-zone") {
+    score += 6;
+  }
+  if (/(defend|protect|hold|secure)/.test(text) && markerKind === "defending-point") {
+    score += 6;
+  }
+  if (/(vehicle|truck|tank|artillery|ground)/.test(text) && groundUnitKinds.includes(markerKind)) {
+    score += 4;
+  }
+  if (/(airfield|runway)/.test(text) && markerKind === "bombing-point") {
+    score += 3;
+  }
+
+  const words = text.match(/[a-z0-9]{4,}/g) ?? [];
+  for (const word of words) {
+    if (haystack.includes(word)) {
+      score += 2;
+    }
+  }
+
+  if (markerKind === "generic") {
+    score -= 1;
+  }
+
+  return score;
+}
+
+function getObjectiveMapMatch(objective, snapshot) {
+  const objects = Array.isArray(snapshot?.mapObjects) ? snapshot.mapObjects : [];
+  const ranked = objects
+    .map((entry) => ({
+      entry,
+      score: getObjectiveMatchScore(objective, entry, snapshot)
+    }))
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score);
+
+  return ranked[0] ?? null;
+}
+
+function getSelectedObjective(snapshot) {
+  if (!appState.selectedObjectiveId) {
+    return null;
+  }
+
+  return getCurrentObjectives(snapshot).find((objective) => objective.id === appState.selectedObjectiveId) ?? null;
+}
+
+function drawSelectedObjective(context, snapshot, width, height) {
+  const objective = getSelectedObjective(snapshot);
+  const match = objective ? getObjectiveMapMatch(objective, snapshot) : null;
+  if (!objective || !match) {
+    return null;
+  }
+
+  const targetPoint = projectMapPoint(match.entry.x, match.entry.y, width, height);
+  const player = getPlayerMapPoint(snapshot);
+  const playerPoint = player ? projectMapPoint(player.x, player.y, width, height) : null;
+  const distanceMeters = player ? getMapDistanceMeters(player, match.entry, snapshot?.mapInfo) : null;
+  const bearingDegrees = player ? getMapBearingDegrees(player, match.entry, snapshot?.mapInfo) : null;
+  const navigationLabel = formatTargetNavigation(distanceMeters, bearingDegrees, snapshot);
+  const title = describeMapEntry(match.entry);
+
+  context.save();
+
+  if (playerPoint) {
+    context.strokeStyle = "rgba(242, 211, 111, 0.86)";
+    context.lineWidth = 2;
+    context.setLineDash([9, 6]);
+    context.beginPath();
+    context.moveTo(playerPoint.x, playerPoint.y);
+    context.lineTo(targetPoint.x, targetPoint.y);
+    context.stroke();
+    context.setLineDash([]);
+  }
+
+  context.strokeStyle = "#f2d36f";
+  context.fillStyle = "rgba(242, 211, 111, 0.16)";
+  context.lineWidth = 3;
+  context.beginPath();
+  context.arc(targetPoint.x, targetPoint.y, 18, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+  context.beginPath();
+  context.arc(targetPoint.x, targetPoint.y, 26, 0, Math.PI * 2);
+  context.stroke();
+
+  context.restore();
+
+  mapGridLabels.insertAdjacentHTML(
+    "beforeend",
+    mapCalloutHtml(`${title} ${navigationLabel}`, targetPoint.x + 14, targetPoint.y - 40, width, height, "objective")
+  );
+
+  return {
+    objective,
+    match,
+    distanceMeters,
+    bearingDegrees
+  };
+}
+
+function updateRouteOutput(snapshot = appState.latest) {
+  toggleRouteButton.setAttribute("aria-pressed", String(appState.route.enabled));
+
+  if (!appState.route.point) {
+    routeOutput.innerHTML = `<span class="measure-output-main">${
+      appState.route.enabled ? "Click a map point or marker" : "No route"
+    }</span><span class="measure-output-detail">&nbsp;</span>`;
+    return;
+  }
+
+  const navigation = getNavigationToPoint(appState.route.point, snapshot);
+  const routeTitle = appState.route.label ?? "Route";
+  routeOutput.innerHTML = `
+    <span class="measure-output-main">${escapeHtml(navigation.label)}</span>
+    <span class="measure-output-detail">${escapeHtml(routeTitle)}${appState.route.snapped ? " snapped" : ""}</span>
+  `;
+}
+
+function drawRoutePoint(context, snapshot, width, height) {
+  if (!appState.route.point) {
+    updateRouteOutput(snapshot);
+    return null;
+  }
+
+  const targetPoint = projectMapPoint(appState.route.point.x, appState.route.point.y, width, height);
+  const player = getPlayerMapPoint(snapshot);
+  const playerPoint = player ? projectMapPoint(player.x, player.y, width, height) : null;
+  const navigation = getNavigationToPoint(appState.route.point, snapshot);
+  const title = appState.route.label ?? formatMapGridCell(appState.route.point, snapshot?.mapInfo);
+
+  context.save();
+
+  if (playerPoint) {
+    context.strokeStyle = "rgba(92, 191, 231, 0.88)";
+    context.lineWidth = 2;
+    context.setLineDash([6, 5]);
+    context.beginPath();
+    context.moveTo(playerPoint.x, playerPoint.y);
+    context.lineTo(targetPoint.x, targetPoint.y);
+    context.stroke();
+    context.setLineDash([]);
+  }
+
+  context.strokeStyle = "#5cbfe7";
+  context.fillStyle = "rgba(92, 191, 231, 0.17)";
+  context.lineWidth = 3;
+  context.beginPath();
+  context.arc(targetPoint.x, targetPoint.y, 17, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+  context.beginPath();
+  context.moveTo(targetPoint.x - 8, targetPoint.y);
+  context.lineTo(targetPoint.x + 8, targetPoint.y);
+  context.moveTo(targetPoint.x, targetPoint.y - 8);
+  context.lineTo(targetPoint.x, targetPoint.y + 8);
+  context.stroke();
+
+  context.restore();
+
+  mapGridLabels.insertAdjacentHTML(
+    "beforeend",
+    mapCalloutHtml(`${title} ${navigation.label}`, targetPoint.x + 14, targetPoint.y + 14, width, height, "route")
+  );
+
+  updateRouteOutput(snapshot);
+
+  return {
+    point: appState.route.point,
+    title,
+    distanceMeters: navigation.distanceMeters,
+    bearingDegrees: navigation.bearingDegrees,
+    navigationLabel: navigation.label
+  };
+}
+
 function renderLegendSymbol(markerKind) {
   const svgByKind = {
     player:
@@ -564,6 +1159,8 @@ function renderLegendSymbol(markerKind) {
       '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="10" height="6" rx="1"></rect><path d="M11 10V7h4"></path><path d="M15 8h4"></path></svg>',
     spaa:
       '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="8" width="12" height="12" rx="2"></rect><path d="M12 5v18"></path><path d="M5 12h14"></path></svg>',
+    bullseye:
+      '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><circle cx="12" cy="12" r="4"></circle><path d="M12 1v5"></path><path d="M12 18v5"></path><path d="M1 12h5"></path><path d="M18 12h5"></path></svg>',
     ground:
       '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5l7 12H5z"></path></svg>',
     generic:
@@ -584,6 +1181,7 @@ function renderMapLegend() {
     { kind: "ship", label: "Ship" },
     { kind: "tank", label: "Tank" },
     { kind: "spaa", label: "Air Defence" },
+    { kind: "bullseye", label: "Bullseye" },
     { kind: "capture-zone", label: "Capture Zone" },
     { kind: "bombing-point", label: "Bombing Point" },
     { kind: "defending-point", label: "Defending Point" },
@@ -631,6 +1229,67 @@ function findMapHitArea(x, y) {
     }
   }
   return null;
+}
+
+function drawBullseyeMarker(context, width, height) {
+  const projected = projectMapPoint(BULLSEYE_POINT.x, BULLSEYE_POINT.y, width, height);
+  drawBullseye(context, projected.x, projected.y);
+
+  appState.mapHitAreas.push({
+    x: projected.x,
+    y: projected.y,
+    mapX: BULLSEYE_POINT.x,
+    mapY: BULLSEYE_POINT.y,
+    radius: 24,
+    label: BULLSEYE_POINT.label
+  });
+
+  mapGridLabels.insertAdjacentHTML(
+    "beforeend",
+    `<span class="map-bullseye-label" style="left:${Math.round(projected.x)}px; top:${Math.round(projected.y - 30)}px">${escapeHtml(
+      BULLSEYE_POINT.label
+    )}</span>`
+  );
+}
+
+function findMapSnapArea(x, y) {
+  let closest = null;
+  let closestDistanceSquared = Infinity;
+
+  for (const area of appState.mapHitAreas) {
+    const dx = x - area.x;
+    const dy = y - area.y;
+    const snapRadius = Math.max(area.radius + 10, 22);
+    const distanceSquared = dx * dx + dy * dy;
+
+    if (distanceSquared <= snapRadius * snapRadius && distanceSquared < closestDistanceSquared) {
+      closest = area;
+      closestDistanceSquared = distanceSquared;
+    }
+  }
+
+  return closest;
+}
+
+function getSnappedMapPoint(screenX, screenY) {
+  const snapArea = findMapSnapArea(screenX, screenY);
+  if (snapArea) {
+    return {
+      point: {
+        x: snapArea.mapX,
+        y: snapArea.mapY
+      },
+      label: snapArea.label,
+      snapped: true
+    };
+  }
+
+  const point = screenToMapPoint(screenX, screenY);
+  return {
+    point,
+    label: formatMapGridCell(point, appState.latest?.mapInfo),
+    snapped: false
+  };
 }
 
 function drawMapMarker(context, entry, x, y) {
@@ -917,11 +1576,12 @@ function detectObjectiveRole(text) {
 function detectObjectiveTargetType(text) {
   const normalized = text.toLowerCase();
 
-  const hasNaval = /(carrier|convoy|fleet|naval|port|harbor|frigate|destroyer|cruiser|ship|boat|submarine)\b/.test(
+  const hasNaval = /(carrier|fleet|naval|port|harbor|frigate|destroyer|cruiser|ship|boat|submarine)\b/.test(
     normalized
   );
   const hasAir = /(airfield|aircraft|bomber|fighter|helicopter|plane|jet|runway)\b/.test(normalized);
-  const hasGround = /(tank|ground|base|column|artillery|vehicle|bunker|truck|bridge|aa|spaa|sam)\b/.test(normalized);
+  const hasGround =
+    /(tank|ground|base|column|convoy|artillery|vehicle|bunker|truck|bridge|aa|spaa|sam)\b/.test(normalized);
 
   const matchedCount = [hasNaval, hasAir, hasGround].filter(Boolean).length;
 
@@ -972,6 +1632,7 @@ function enrichObjective(objective, index) {
   const status = objective?.status ?? "undefined";
 
   return {
+    id: `objective-${index}-${hashText(text)}`,
     index,
     text,
     primary: Boolean(objective?.primary),
@@ -980,6 +1641,19 @@ function enrichObjective(objective, index) {
     status,
     statusLabel: getStatusLabel(status)
   };
+}
+
+function hashText(value) {
+  let hash = 0;
+  for (let index = 0; index < String(value).length; index += 1) {
+    hash = (hash * 31 + String(value).charCodeAt(index)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+function getCurrentObjectives(snapshot) {
+  const mission = snapshot?.mission;
+  return Array.isArray(mission?.objectives) ? mission.objectives.map(enrichObjective) : [];
 }
 
 function renderTargetIcon(targetType) {
@@ -1021,12 +1695,23 @@ function renderTargetIcon(targetType) {
   `;
 }
 
-function renderObjectiveCard(objective) {
+function renderObjectiveCard(objective, snapshot) {
   const roleMeta = missionRoleMeta[objective.role] ?? missionRoleMeta.support;
   const targetMeta = targetTypeMeta[objective.targetType] ?? targetTypeMeta.ground;
+  const isSelected = appState.selectedObjectiveId === objective.id;
+  const match = isSelected ? getObjectiveMapMatch(objective, snapshot) : null;
+  const player = getPlayerMapPoint(snapshot);
+  const distanceMeters = match?.entry && player ? getMapDistanceMeters(player, match.entry, snapshot?.mapInfo) : null;
+  const bearingDegrees = match?.entry && player ? getMapBearingDegrees(player, match.entry, snapshot?.mapInfo) : null;
+  const navigationLabel = formatTargetNavigation(distanceMeters, bearingDegrees, snapshot);
 
   return `
-    <article class="objective-card objective-${roleMeta.accent}">
+    <button
+      class="objective-card objective-${roleMeta.accent}"
+      type="button"
+      data-objective-id="${escapeHtml(objective.id)}"
+      aria-pressed="${String(isSelected)}"
+    >
       <div class="objective-header">
         <div class="objective-target-badge">
           <span class="objective-icon objective-icon-${targetMeta.icon}">${renderTargetIcon(objective.targetType)}</span>
@@ -1038,7 +1723,19 @@ function renderObjectiveCard(objective) {
         <span class="objective-status ${getStatusClass(objective.status)}">${objective.statusLabel}</span>
       </div>
       <p class="objective-text">${escapeHtml(objective.text)}</p>
-    </article>
+      ${
+        isSelected
+          ? `<div class="objective-selection-detail">
+              <span>${match ? escapeHtml(describeMapEntry(match.entry)) : "No matching map marker"}</span>
+              <strong>${
+                distanceMeters === null
+                  ? "Range unavailable"
+                  : navigationLabel
+              }</strong>
+            </div>`
+          : ""
+      }
+    </button>
   `;
 }
 
@@ -1221,11 +1918,11 @@ function renderMission(snapshot) {
     return;
   }
 
-  const objectives = Array.isArray(mission.objectives) ? mission.objectives.map(enrichObjective) : [];
-  const pendingObjectives = objectives.filter((objective) => getStatusClass(objective.status) === "is-pending");
-  const visibleObjectives = appState.showPendingObjectives
-    ? objectives
-    : objectives.filter((objective) => getStatusClass(objective.status) !== "is-pending");
+  const objectives = getCurrentObjectives(snapshot);
+  if (appState.selectedObjectiveId && !objectives.some((objective) => objective.id === appState.selectedObjectiveId)) {
+    appState.selectedObjectiveId = null;
+  }
+  const visibleObjectives = objectives.filter((objective) => getStatusClass(objective.status) !== "is-pending");
   const groupedObjectives = missionRoleOrder
     .map((role) => ({
       role,
@@ -1249,18 +1946,8 @@ function renderMission(snapshot) {
       </article>
       <article class="mission-pill">
         <span>Objectives</span>
-        <strong>${objectives.length}</strong>
+        <strong>${visibleObjectives.length}</strong>
       </article>
-    </div>
-    <div class="mission-toolbar">
-      <button
-        id="toggle-pending-targets"
-        class="clear-button toggle-button"
-        type="button"
-        aria-pressed="${String(!appState.showPendingObjectives)}"
-      >
-        ${appState.showPendingObjectives ? "Hide" : "Show"} Pending Targets (${pendingObjectives.length})
-      </button>
     </div>
     ${
       groupedObjectives.length > 0
@@ -1272,26 +1959,30 @@ function renderMission(snapshot) {
                     <span class="objective-group-tag objective-${group.meta.accent}">${group.meta.label}</span>
                     <strong>${group.items.length}</strong>
                   </div>
-                  <div class="objective-card-grid">${group.items.map(renderObjectiveCard).join("")}</div>
+                  <div class="objective-card-grid">${group.items.map((objective) => renderObjectiveCard(objective, snapshot)).join("")}</div>
                 </section>
               `
             )
             .join("")}</div>`
         : `<p class="empty-note">${
             objectives.length > 0
-              ? "No objectives match the current pending-target filter."
+              ? "No active objective details are being reported for this sortie."
               : "War Thunder is not publishing objective details for this sortie."
           }</p>`
     }
   `;
 
-  const togglePendingTargetsButton = document.querySelector("#toggle-pending-targets");
-  togglePendingTargetsButton?.addEventListener("click", () => {
-    appState.showPendingObjectives = !appState.showPendingObjectives;
-    if (appState.latest) {
-      renderMission(appState.latest);
-    }
-  });
+  for (const card of missionContent.querySelectorAll("[data-objective-id]")) {
+    card.addEventListener("click", () => {
+      const nextId = card.dataset.objectiveId;
+      appState.selectedObjectiveId = appState.selectedObjectiveId === nextId ? null : nextId;
+      hideMapTooltip();
+      if (appState.latest) {
+        renderMission(appState.latest);
+        drawMap(appState.latest);
+      }
+    });
+  }
 }
 
 function syncFeed(feedName, incomingLines) {
@@ -1469,21 +2160,7 @@ function drawMap(snapshot) {
   appState.mapHitAreas = [];
 
   context.clearRect(0, 0, width, height);
-
-  for (let index = 1; index < 8; index += 1) {
-    const vertical = projectMapPoint(index / 8, 0, width, height);
-    const verticalEnd = projectMapPoint(index / 8, 1, width, height);
-    const horizontal = projectMapPoint(0, index / 8, width, height);
-    const horizontalEnd = projectMapPoint(1, index / 8, width, height);
-    context.strokeStyle = "rgba(255,255,255,0.08)";
-    context.lineWidth = 1;
-    context.beginPath();
-    context.moveTo(vertical.x, vertical.y);
-    context.lineTo(verticalEnd.x, verticalEnd.y);
-    context.moveTo(horizontal.x, horizontal.y);
-    context.lineTo(horizontalEnd.x, horizontalEnd.y);
-    context.stroke();
-  }
+  drawWarThunderGrid(context, snapshot, width, height);
 
   objects.forEach((entry) => {
     const color = entry?.color ?? "#ffffff";
@@ -1509,17 +2186,33 @@ function drawMap(snapshot) {
     appState.mapHitAreas.push({
       x: projected.x,
       y: projected.y,
+      mapX: entry.x,
+      mapY: entry.y,
       radius: getMarkerKind(entry) === "player" ? 16 : 12,
       label: describeMapEntry(entry)
     });
   });
 
+  drawBullseyeMarker(context, width, height);
+  const selection = drawSelectedObjective(context, snapshot, width, height);
+  const route = drawRoutePoint(context, snapshot, width, height);
   drawMeasurement(context, snapshot, width, height);
 
   mapMeta.innerHTML = `
     <span>${objects.length} objects</span>
     <span>${snapshot?.mapInfo?.valid ? "Map live" : "Map idle"}</span>
+    <span>${getMapGridSize(snapshot?.mapInfo).columns}x${getMapGridSize(snapshot?.mapInfo).rows} grid</span>
     <span>${appState.mapView.zoom.toFixed(1)}x zoom</span>
+    ${
+      selection
+        ? `<span>Selected: ${formatTargetNavigation(selection.distanceMeters, selection.bearingDegrees, snapshot)}</span>`
+        : ""
+    }
+    ${
+      route
+        ? `<span>Route: ${escapeHtml(route.title)} / ${escapeHtml(route.navigationLabel)}</span>`
+        : ""
+    }
   `;
   mapEmpty.hidden = objects.length > 0;
   applyMapTransform();
@@ -1584,6 +2277,11 @@ async function fetchTelemetry(scope) {
 }
 
 async function refresh(scope) {
+  if (refreshInFlight.has(scope)) {
+    return;
+  }
+
+  refreshInFlight.add(scope);
   try {
     const payload = await fetchTelemetry(scope);
     appState.latest = payload.telemetry;
@@ -1593,6 +2291,8 @@ async function refresh(scope) {
     connectionDot.dataset.connected = "false";
     connectionLabel.textContent = "Telemetry unavailable";
     updatedLabel.textContent = error instanceof Error ? error.message : "Unknown error";
+  } finally {
+    refreshInFlight.delete(scope);
   }
 }
 
@@ -1636,7 +2336,23 @@ toggleMeasureButton.addEventListener("click", () => {
   appState.measure.enabled = !appState.measure.enabled;
   appState.measure.isDrawing = false;
   appState.measure.pointerId = null;
+  if (appState.measure.enabled) {
+    appState.route.enabled = false;
+  }
   updateMeasureOutput();
+  updateRouteOutput();
+  applyMapTransform();
+});
+
+toggleRouteButton.addEventListener("click", () => {
+  appState.route.enabled = !appState.route.enabled;
+  if (appState.route.enabled) {
+    appState.measure.enabled = false;
+    appState.measure.isDrawing = false;
+    appState.measure.pointerId = null;
+  }
+  updateMeasureOutput();
+  updateRouteOutput();
   applyMapTransform();
 });
 
@@ -1652,6 +2368,8 @@ measureUnitSelect.addEventListener("change", () => {
 clearMeasureButton.addEventListener("click", () => {
   appState.measure.start = null;
   appState.measure.end = null;
+  appState.measure.startLabel = null;
+  appState.measure.endLabel = null;
   appState.measure.isDrawing = false;
   appState.measure.pointerId = null;
   if (appState.latest) {
@@ -1659,6 +2377,19 @@ clearMeasureButton.addEventListener("click", () => {
   } else {
     updateMeasureOutput();
   }
+});
+
+clearRouteButton.addEventListener("click", () => {
+  appState.route.enabled = false;
+  appState.route.point = null;
+  appState.route.label = null;
+  appState.route.snapped = false;
+  if (appState.latest) {
+    drawMap(appState.latest);
+  } else {
+    updateRouteOutput();
+  }
+  applyMapTransform();
 });
 
 mapStage.addEventListener(
@@ -1699,18 +2430,44 @@ mapStage.addEventListener(
 );
 
 mapStage.addEventListener("pointerdown", (event) => {
+  if (appState.route.enabled) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const rect = mapStage.getBoundingClientRect();
+    const routeTarget = getSnappedMapPoint(event.clientX - rect.left, event.clientY - rect.top);
+
+    event.preventDefault();
+    hideMapTooltip();
+    appState.route.point = routeTarget.point;
+    appState.route.label = routeTarget.label;
+    appState.route.snapped = routeTarget.snapped;
+    appState.route.enabled = false;
+
+    if (appState.latest) {
+      drawMap(appState.latest);
+    } else {
+      updateRouteOutput();
+    }
+    applyMapTransform();
+    return;
+  }
+
   if (appState.measure.enabled) {
     if (event.button !== 0) {
       return;
     }
 
     const rect = mapStage.getBoundingClientRect();
-    const point = screenToMapPoint(event.clientX - rect.left, event.clientY - rect.top);
+    const measureStart = getSnappedMapPoint(event.clientX - rect.left, event.clientY - rect.top);
 
     event.preventDefault();
     hideMapTooltip();
-    appState.measure.start = point;
-    appState.measure.end = point;
+    appState.measure.start = measureStart.point;
+    appState.measure.end = measureStart.point;
+    appState.measure.startLabel = measureStart.label;
+    appState.measure.endLabel = measureStart.label;
     appState.measure.isDrawing = true;
     appState.measure.pointerId = event.pointerId;
     mapStage.setPointerCapture(event.pointerId);
@@ -1739,7 +2496,9 @@ mapStage.addEventListener("pointerdown", (event) => {
 mapStage.addEventListener("pointermove", (event) => {
   if (appState.measure.isDrawing && appState.measure.pointerId === event.pointerId) {
     const rect = mapStage.getBoundingClientRect();
-    appState.measure.end = screenToMapPoint(event.clientX - rect.left, event.clientY - rect.top);
+    const measureEnd = getSnappedMapPoint(event.clientX - rect.left, event.clientY - rect.top);
+    appState.measure.end = measureEnd.point;
+    appState.measure.endLabel = measureEnd.label;
     event.preventDefault();
 
     if (appState.latest) {
@@ -1831,7 +2590,7 @@ window.addEventListener("resize", () => {
 await refresh("full");
 window.setInterval(() => {
   refresh("fast");
-}, 600);
+}, FAST_REFRESH_MS);
 window.setInterval(() => {
   refresh("slow");
-}, 3000);
+}, SLOW_REFRESH_MS);
